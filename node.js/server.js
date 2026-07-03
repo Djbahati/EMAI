@@ -1,12 +1,15 @@
-const express = require('express');
-const nodemailer = require('nodemailer');
-const bodyParser = require('body-parser');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const winston = require('winston');
+import express from 'express';
+import nodemailer from 'nodemailer';
+import bodyParser from 'body-parser';
+import mongoose from 'mongoose';
+import cors from 'cors';
+import winston from 'winston';
+import dotenv from 'dotenv';
+
+dotenv.config({ path: 'mail.env' });
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ?? 3000;
 
 // Middleware
 app.use(bodyParser.json());
@@ -22,40 +25,35 @@ const logger = winston.createLogger({
   ],
 });
 
-// Email Configuration
-const transporter = nodemailer.createTransport({
-  host: 'smtp.com',
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+// Transporter will be created during init
+let transporter;
 
 // Send Email Endpoint
 app.post('/api/send-email', async (req, res) => {
   const { to, subject, text } = req.body;
   try {
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to,
       subject,
       text,
     });
-    logger.info('Email sent successfully');
-    res.status(200).send('Email sent successfully');
+    logger.info('Email sent successfully', { messageId: info.messageId });
+    // If using Ethereal, expose preview URL in response for local testing
+    const preview = nodemailer.getTestMessageUrl ? nodemailer.getTestMessageUrl(info) : undefined;
+    res.status(200).json({ message: 'Email sent successfully', preview });
   } catch (error) {
-    logger.error('Error sending email:', error);
-    res.status(500).send('Error sending email');
+    logger.error('Error sending email', { error: error.message || error });
+    res.status(500).json({ error: 'Error sending email' });
   }
 });
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGO_URI, {
+  // mongoose v6+ no longer requires these options but keep for compatibility
   useNewUrlParser: true,
   useUnifiedTopology: true,
-});
+}).catch(err => logger.error('MongoDB connection error', { error: err }));
 
 const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'connection error:'));
@@ -81,7 +79,7 @@ app.post('/api/contacts', async (req, res) => {
     logger.info('Contact added successfully');
     res.status(201).send(contact);
   } catch (error) {
-    logger.error('Error adding contact:', error);
+    logger.error('Error adding contact', { error: error.message || error });
     res.status(500).send('Error adding contact');
   }
 });
@@ -92,12 +90,47 @@ app.get('/api/contacts', async (req, res) => {
     const contacts = await Contact.find();
     res.status(200).send(contacts);
   } catch (error) {
-    logger.error('Error fetching contacts:', error);
+    logger.error('Error fetching contacts', { error: error.message || error });
     res.status(500).send('Error fetching contacts');
   }
 });
 
-// Start the Server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${5252}`);
+// Initialize transporter and start server
+async function init() {
+  if (process.env.SMTP_HOST) {
+    transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587', 10),
+      secure: (process.env.SMTP_SECURE === 'true') || false,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+    console.log('Using SMTP host from environment');
+  } else {
+    // Fallback to Ethereal test account for local/dev testing
+    const testAccount = await nodemailer.createTestAccount();
+    transporter = nodemailer.createTransport({
+      host: 'smtp.ethereal.email',
+      port: 587,
+      secure: false,
+      auth: {
+        user: testAccount.user,
+        pass: testAccount.pass,
+      },
+    });
+    console.log('No SMTP configured — using Ethereal test account (local testing)');
+    console.log('Ethereal user:', testAccount.user);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+init().catch(err => {
+  logger.error('Initialization error', { error: err.message || err });
+  console.error(err);
+  process.exit(1);
 });

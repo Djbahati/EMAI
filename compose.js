@@ -21,7 +21,8 @@ function Compose() {
       await axios.post('/api/send-email', formData);
       alert('Email sent successfully');
     } catch (error) {
-      alert('Error sending email: ' + error.response.data.message);
+      const msg = error?.response?.data?.error || error?.message || 'Unknown error';
+      alert('Error sending email: ' + msg);
     }
   };
 
